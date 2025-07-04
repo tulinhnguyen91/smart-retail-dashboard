@@ -9,3 +9,4 @@ prophet
 lightgbm
 pulp
 tensorflow-cpu
+statsmodels
