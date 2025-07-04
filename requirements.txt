@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy==1.26.4
+matplotlib
+seaborn
+scipy
+scikit-learn
+prophet
+lightgbm
+pulp
+tensorflow-cpu
