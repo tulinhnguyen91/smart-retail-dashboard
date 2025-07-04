@@ -72,9 +72,13 @@ if analysis_type == "Tổng quan dữ liệu":
     st.subheader("5 dòng đầu tiên của dữ liệu cuối cùng:")
     st.dataframe(df_final.head())
     st.subheader("Thông tin tổng quan về dữ liệu:")
-    st.write(df_final.info())
+    buffer = io.StringIO()
+    df_final.info(buf=buffer) # df.info() sẽ ghi thông tin vào 'buffer'
+    s = buffer.getvalue()     # Lấy toàn bộ nội dung từ 'buffer' dưới dạng chuỗi
+    st.text(s)                # Hiển thị chuỗi này trong Streamlit
+
     st.subheader("Thống kê mô tả:")
-    st.write(df_final.describe())
+    st.dataframe(df_final.describe())
 
 elif analysis_type == "Phân tích Khám phá (EDA)":
     st.header("Phân tích Khám phá Dữ liệu (EDA)")
