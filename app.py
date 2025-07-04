@@ -10,6 +10,7 @@ Original file is located at
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import io
 
 # Import functions from your modules
 from utils.data_preprocessing import load_and_preprocess_data
