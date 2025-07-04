@@ -10,7 +10,9 @@ Original file is located at
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import io
+import numpy as np
+import time
+import io # Đảm bảo dòng này có ở đầu file
 
 # Import functions from your modules
 from utils.data_preprocessing import load_and_preprocess_data
@@ -20,7 +22,9 @@ from eda.visualizations import (
     plot_monthly_units_sold_by_performance_tier, plot_quantity_sold_by_location_tier,
     plot_performance_tier_distribution_by_location_tier,
     plot_promotion_activity_throughout_year, plot_promotion_type_frequency_by_brand,
-    plot_monthly_promo_budget_vs_units_sold, plot_correlation_heatmap
+    plot_monthly_promo_budget_vs_units_sold, plot_correlation_heatmap,
+    plot_sales_distribution, get_top_n_products, get_descriptive_stats,
+    get_top_n_products_by_revenue, plot_time_series_decomposition
 )
 from models.linear_regression import run_linear_regression_forecast
 from models.prophet_model import run_prophet_forecast
@@ -30,129 +34,241 @@ from optimization.inventory_optimization import run_inventory_optimization
 from optimization.supply_chain_optimization import run_supply_chain_optimization
 from concept_drift.drift_detector import run_concept_drift_check
 
-st.set_page_config(layout="wide", page_title="Hệ thống phân tích và dự báo bán hàng")
+# --- Cấu hình trang Streamlit ---
+st.set_page_config(
+    layout="wide",
+    page_title="Hệ thống Phân tích & Dự báo Bán hàng",
+    page_icon="📊"
+)
 
-st.title("Hệ thống phân tích và dự báo bán hàng")
+# --- Tiêu đề chính của ứng dụng ---
+st.title("📊 Hệ thống Phân tích & Dự báo Bán hàng Thông minh")
+st.markdown("""
+Chào mừng bạn đến với Dashboard phân tích bán hàng toàn diện.
+Sử dụng thanh điều hướng bên trái để khám phá các chức năng chính:
+""")
 
-# --- Load Data (using Streamlit's caching) ---
+# --- Load Data (sử dụng Streamlit's caching) ---
 @st.cache_data
-def load_data():
-    """Load and preprocess data, then save final_dataset.csv for other modules."""
+def load_and_cache_data():
+    """
+    Tải và tiền xử lý dữ liệu.
+    Sử dụng st.cache_data để tránh tải lại dữ liệu mỗi khi ứng dụng refresh.
+    """
+    st.info("Đang tải và tiền xử lý dữ liệu. Vui lòng chờ một chút...")
     df_final = load_and_preprocess_data(
         transaction_path='data/transaction_data_2023_2024_updated.csv',
         promotion_path='data/promotion_data.csv',
         store_path='data/store_info_data_2023_2024_updated.csv'
     )
     if not df_final.empty:
-        # Save to a temporary file or a known location for other modules to read if needed
-        # For simplicity, we'll assume other modules can access 'df_final' directly if passed
-        # or can re-load 'final_dataset.csv' if it's placed in 'data/'
-        df_final.to_csv('data/final_dataset.csv', index=False) # Ensure this file exists for drift_detector
+        # Lưu df_final vào một file tạm thời để các module khác có thể đọc nếu cần
+        # (ví dụ: drift_detector đọc từ file)
+        df_final.to_csv('data/final_dataset.csv', index=False)
+        st.success("Dữ liệu đã được tải và tiền xử lý thành công!")
+    else:
+        st.error("Không thể tải hoặc xử lý dữ liệu. Vui lòng kiểm tra các file CSV trong thư mục `data/`.")
     return df_final
 
-df_final = load_data()
+df_final = load_and_cache_data()
 
+# Dừng ứng dụng nếu không có dữ liệu
 if df_final.empty:
-    st.error("Không thể tải hoặc xử lý dữ liệu. Vui lòng kiểm tra các file CSV trong thư mục `data/`.")
-    st.stop() # Dừng ứng dụng nếu không có dữ liệu
+    st.stop()
 
-df_transaction_for_eda = df_final.copy() # EDA functions might modify, so pass a copy
+# Tạo bản sao cho các hàm EDA có thể sửa đổi DataFrame
+df_transaction_for_eda = df_final.copy()
+# Tải df_store_info một lần ở đây và truyền vào các hàm tối ưu
+df_store_info_for_opt = pd.read_csv('data/store_info_data_2023_2024_updated.csv')
+
 
 # --- Sidebar Navigation ---
-st.sidebar.title("Navigation")
+st.sidebar.title("Điều hướng")
 analysis_type = st.sidebar.radio(
-    "Chọn loại phân tích:",
-    ("Tổng quan dữ liệu", "Phân tích Khám phá (EDA)", "Dự báo Doanh số", "Tối ưu hóa", "Concept Drift")
+    "Chọn chức năng:",
+    ("Tổng quan Dữ liệu", "Phân tích Khám phá (EDA)", "Dự báo Doanh số", "Tối ưu hóa", "Concept Drift")
 )
 
 # --- Main Content Area ---
 
-if analysis_type == "Tổng quan dữ liệu":
-    st.header("Tổng quan Dữ liệu")
-    st.write("Dữ liệu đã được tải và tiền xử lý thành công.")
+if analysis_type == "Tổng quan Dữ liệu":
+    st.header("📊 Tổng quan Dữ liệu")
+    st.markdown("Cung cấp cái nhìn tổng quát về cấu trúc và nội dung của tập dữ liệu đã được tiền xử lý.")
+
+    # Hiển thị các chỉ số KPI quan trọng
+    total_revenue = df_final['Revenue'].sum() / 1_000_000 # Chuyển sang triệu VND
+    total_units_sold = df_final['Quantity_Sold'].sum()
+    num_unique_products = df_final['Product_Name'].nunique()
+    num_unique_stores = df_final['Store_ID'].nunique()
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Tổng Doanh thu", f"{total_revenue:,.2f} Triệu VND")
+    with col2:
+        st.metric("Tổng SP Bán ra", f"{total_units_sold:,.0f} Đơn vị")
+    with col3:
+        st.metric("Số lượng Sản phẩm", f"{num_unique_products}")
+    with col4:
+        st.metric("Số lượng Cửa hàng", f"{num_unique_stores}")
+
     st.subheader("5 dòng đầu tiên của dữ liệu cuối cùng:")
     st.dataframe(df_final.head())
+
     st.subheader("Thông tin tổng quan về dữ liệu:")
+    # Để hiển thị df.info() trong Streamlit, cần chuyển nó thành string
     buffer = io.StringIO()
-    df_final.info(buf=buffer) # df.info() sẽ ghi thông tin vào 'buffer'
-    s = buffer.getvalue()     # Lấy toàn bộ nội dung từ 'buffer' dưới dạng chuỗi
-    st.text(s)                # Hiển thị chuỗi này trong Streamlit
+    df_final.info(buf=buffer)
+    s = buffer.getvalue()
+    st.text(s)
 
     st.subheader("Thống kê mô tả:")
     st.dataframe(df_final.describe())
 
 elif analysis_type == "Phân tích Khám phá (EDA)":
-    st.header("Phân tích Khám phá Dữ liệu (EDA)")
-    eda_option = st.selectbox(
-        "Chọn biểu đồ EDA:",
-        [
-            "Xếp hạng hiệu suất cửa hàng theo số lượng bán",
-            "Doanh thu hàng tháng",
-            "Tổng số sản phẩm bán ra theo tháng",
-            "Số lượng bán theo thương hiệu cho mỗi cửa hàng",
-            "Tổng số sản phẩm Apple vs Samsung bán ra theo năm",
-            "Xu hướng số lượng bán hàng tháng theo cấp hiệu suất cửa hàng",
-            "Tổng và trung bình số lượng bán theo cấp độ vị trí cửa hàng",
-            "Phân phối cấp hiệu suất theo cấp độ vị trí cửa hàng",
-            "Hoạt động khuyến mãi trong năm",
-            "Tần suất loại khuyến mãi theo thương hiệu",
-            "Tương quan: Ngân sách khuyến mãi hàng tháng vs Số lượng bán",
-            "Heatmap ma trận tương quan"
-        ]
-    )
+    st.header("🔍 Phân tích Khám phá Dữ liệu (EDA)")
+    st.markdown("Khám phá các insight, xu hướng và mối quan hệ trong dữ liệu bán hàng của bạn thông qua các biểu đồ và bảng thống kê.")
 
-    if eda_option == "Xếp hạng hiệu suất cửa hàng theo số lượng bán":
-        st.subheader("Xếp hạng hiệu suất cửa hàng theo số lượng bán")
+    # Sử dụng Tabs để tổ chức các biểu đồ EDA
+    tab_sales_perf, tab_promo_corr, tab_stats_products = st.tabs([
+        "📈 Hiệu suất Bán hàng",
+        "🏷️ Phân tích Khuyến mãi & Tương quan",
+        "📊 Thống kê & Sản phẩm"
+    ])
+
+    with tab_sales_perf:
+        st.subheader("Hiệu suất Bán hàng")
+        st.markdown("Các biểu đồ dưới đây phân tích hiệu suất bán hàng tổng thể, theo thời gian và theo cửa hàng/thương hiệu.")
+
+        st.markdown("---")
+        st.write("#### Xếp hạng hiệu suất cửa hàng theo số lượng bán")
         fig = plot_store_performance_ranking(df_transaction_for_eda)
         st.pyplot(fig)
-    elif eda_option == "Doanh thu hàng tháng":
-        st.subheader("Doanh thu hàng tháng")
+        st.markdown("Biểu đồ cột này hiển thị tổng số lượng sản phẩm bán ra của từng cửa hàng, giúp xác định các cửa hàng hoạt động hiệu quả nhất.")
+
+        st.markdown("---")
+        st.write("#### Doanh thu hàng tháng")
         fig = plot_monthly_revenue(df_final)
         st.pyplot(fig)
-    elif eda_option == "Tổng số sản phẩm bán ra theo tháng":
-        st.subheader("Tổng số sản phẩm bán ra theo tháng")
+        st.markdown("Biểu đồ đường thể hiện xu hướng doanh thu tổng cộng theo từng tháng trong giai đoạn 2023-2024.")
+
+        st.markdown("---")
+        st.write("#### Tổng số sản phẩm bán ra theo tháng")
         fig = plot_total_units_sold_by_month(df_final)
         st.pyplot(fig)
-    elif eda_option == "Số lượng bán theo thương hiệu cho mỗi cửa hàng":
-        st.subheader("Số lượng bán theo thương hiệu cho mỗi cửa hàng")
+        st.markdown("Xu hướng tổng số lượng sản phẩm bán ra theo từng tháng, cho thấy tính mùa vụ hoặc các giai đoạn tăng/giảm doanh số.")
+
+        st.markdown("---")
+        st.write("#### Số lượng bán theo thương hiệu cho mỗi cửa hàng")
         fig = plot_quantity_sold_by_brand_per_store(df_transaction_for_eda)
         st.pyplot(fig)
-    elif eda_option == "Tổng số sản phẩm Apple vs Samsung bán ra theo năm":
-        st.subheader("Tổng số sản phẩm Apple vs Samsung bán ra theo năm")
+        st.markdown("Biểu đồ cột nhóm này so sánh số lượng sản phẩm của Apple và Samsung bán ra tại mỗi cửa hàng.")
+
+        st.markdown("---")
+        st.write("#### Tổng số sản phẩm Apple vs Samsung bán ra theo năm")
         fig = plot_apple_vs_samsung_sales_by_year(df_final)
         st.pyplot(fig)
-    elif eda_option == "Xu hướng số lượng bán hàng tháng theo cấp hiệu suất cửa hàng":
-        st.subheader("Xu hướng số lượng bán hàng tháng theo cấp hiệu suất cửa hàng")
+        st.markdown("So sánh tổng số lượng sản phẩm của Apple và Samsung bán ra theo từng năm.")
+
+        st.markdown("---")
+        st.write("#### Xu hướng số lượng bán hàng tháng theo cấp hiệu suất cửa hàng")
         fig = plot_monthly_units_sold_by_performance_tier(df_final)
         st.pyplot(fig)
-    elif eda_option == "Tổng và trung bình số lượng bán theo cấp độ vị trí cửa hàng":
-        st.subheader("Tổng và trung bình số lượng bán theo cấp độ vị trí cửa hàng")
-        fig1, fig2 = plot_quantity_sold_by_location_tier(df_transaction_for_eda)
-        st.pyplot(fig1)
-        st.pyplot(fig2)
-    elif eda_option == "Phân phối cấp hiệu suất theo cấp độ vị trí cửa hàng":
-        st.subheader("Phân phối cấp hiệu suất theo cấp độ vị trí cửa hàng")
+        st.markdown("Biểu đồ đường này phân tích xu hướng số lượng bán hàng tháng của các cửa hàng được phân loại theo hiệu suất (Cao, Trung bình, Thấp).")
+
+        st.markdown("---")
+        st.write("#### Tổng và trung bình số lượng bán theo cấp độ vị trí cửa hàng")
+        col_loc1, col_loc2 = st.columns(2)
+        with col_loc1:
+            fig1, fig2 = plot_quantity_sold_by_location_tier(df_transaction_for_eda)
+            st.pyplot(fig1)
+            st.markdown("Tổng số lượng bán theo cấp độ vị trí (Trung tâm, Gần trung tâm, Ngoại ô).")
+        with col_loc2:
+            st.pyplot(fig2)
+            st.markdown("Số lượng bán trung bình trên mỗi giao dịch theo cấp độ vị trí.")
+
+        st.markdown("---")
+        st.write("#### Phân phối cấp hiệu suất theo cấp độ vị trí cửa hàng")
         fig = plot_performance_tier_distribution_by_location_tier(df_final)
         st.pyplot(fig)
-    elif eda_option == "Hoạt động khuyến mãi trong năm":
-        st.subheader("Hoạt động khuyến mãi trong năm")
+        st.markdown("Heatmap này cho thấy tỷ lệ phân phối của các cấp hiệu suất cửa hàng (Thấp, Trung bình, Cao) trong từng cấp độ vị trí địa lý.")
+
+
+    with tab_promo_corr:
+        st.subheader("Phân tích Khuyến mãi & Tương quan")
+        st.markdown("Phần này tập trung vào tác động của các chương trình khuyến mãi và mối quan hệ giữa các biến số trong dữ liệu.")
+
+        st.markdown("---")
+        st.write("#### Hoạt động khuyến mãi trong năm")
         fig = plot_promotion_activity_throughout_year(df_final)
         st.pyplot(fig)
-    elif eda_option == "Tần suất loại khuyến mãi theo thương hiệu":
-        st.subheader("Tần suất loại khuyến mãi theo thương hiệu")
+        st.markdown("Biểu đồ kết hợp hiển thị số lượng chương trình khuyến mãi và tổng ngân sách khuyến mãi theo từng tháng.")
+
+        st.markdown("---")
+        st.write("#### Tần suất loại khuyến mãi theo thương hiệu")
         fig = plot_promotion_type_frequency_by_brand(df_final)
         st.pyplot(fig)
-    elif eda_option == "Tương quan: Ngân sách khuyến mãi hàng tháng vs Số lượng bán":
-        st.subheader("Tương quan: Ngân sách khuyến mãi hàng tháng vs Số lượng bán")
+        st.markdown("Biểu đồ cột này so sánh tần suất các loại khuyến mãi (Giảm giá, Đổi cũ lấy mới) được áp dụng cho từng thương hiệu (Apple, Samsung).")
+
+        st.markdown("---")
+        st.write("#### Tương quan: Ngân sách khuyến mãi hàng tháng vs Số lượng bán")
         fig = plot_monthly_promo_budget_vs_units_sold(df_final)
         st.pyplot(fig)
-    elif eda_option == "Heatmap ma trận tương quan":
-        st.subheader("Heatmap ma trận tương quan của các biến số")
+        st.markdown("Biểu đồ phân tán với đường hồi quy này minh họa mối quan hệ giữa tổng ngân sách khuyến mãi hàng tháng và tổng số lượng sản phẩm bán ra hàng tháng.")
+
+        st.markdown("---")
+        st.write("#### Heatmap ma trận tương quan")
         fig = plot_correlation_heatmap(df_final)
         st.pyplot(fig)
+        st.markdown("Heatmap hiển thị ma trận tương quan Pearson giữa các biến số số học trong tập dữ liệu, giúp nhận diện các mối quan hệ mạnh mẽ giữa chúng.")
+
+    with tab_stats_products:
+        st.subheader("Thống kê & Sản phẩm")
+        st.markdown("Cung cấp các bảng thống kê chi tiết và phân tích sâu về sản phẩm.")
+
+        st.markdown("---")
+        st.write("#### Thống kê mô tả tổng quan của dữ liệu")
+        stats_df = get_descriptive_stats(df_final, columns_to_describe=['Quantity_Sold', 'Price', 'Revenue', 'Stock_Level', 'Promo_Budget', 'Store_Size'])
+        st.dataframe(stats_df)
+        st.markdown("Bảng trên cung cấp các thống kê mô tả cơ bản (trung bình, độ lệch chuẩn, min, max, các tứ phân vị) cho các cột số quan trọng trong dữ liệu của bạn.")
+
+        st.markdown("---")
+        st.write("#### Phân phối số lượng bán (Quantity_Sold)")
+        fig = plot_sales_distribution(df_final)
+        st.pyplot(fig)
+        st.markdown("Biểu đồ này cho thấy phân phối của số lượng sản phẩm bán ra. Bạn có thể nhận thấy liệu dữ liệu có bị lệch (skewed) hay có nhiều giá trị ngoại lai (outliers) không.")
+
+        st.markdown("---")
+        st.write("#### Top N sản phẩm bán chạy nhất theo số lượng")
+        top_n_qty = st.slider("Chọn số lượng sản phẩm Top N:", min_value=5, max_value=20, value=10, key="top_n_qty_slider")
+        top_products_qty_df = get_top_n_products(df_final, n=top_n_qty)
+        st.dataframe(top_products_qty_df)
+        st.markdown(f"Bảng này liệt kê {top_n_qty} sản phẩm có tổng số lượng bán cao nhất trong toàn bộ dữ liệu.")
+
+        st.markdown("---")
+        st.write("#### Top N sản phẩm bán chạy nhất theo doanh thu")
+        top_n_revenue = st.slider("Chọn số lượng sản phẩm Top N:", min_value=5, max_value=20, value=10, key="top_n_revenue_slider")
+        top_products_revenue_df = get_top_n_products_by_revenue(df_final, n=top_n_revenue)
+        st.dataframe(top_products_revenue_df)
+        st.markdown(f"Bảng này liệt kê {top_n_revenue} sản phẩm tạo ra doanh thu cao nhất.")
+
+        st.markdown("---")
+        st.write("#### Phân rã chuỗi thời gian theo sản phẩm")
+        product_names_for_decomposition = df_final['Product_Name'].unique().tolist()
+        selected_product_for_decomp = st.selectbox("Chọn sản phẩm để phân rã chuỗi thời gian:", product_names_for_decomposition)
+        if st.button(f"Phân rã chuỗi thời gian cho {selected_product_for_decomp}"):
+            with st.spinner(f"Đang phân rã chuỗi thời gian cho {selected_product_for_decomp}..."):
+                fig = plot_time_series_decomposition(df_final, selected_product_for_decomp)
+            if fig:
+                st.pyplot(fig)
+                st.markdown("Biểu đồ này phân rã chuỗi thời gian thành các thành phần: Quan sát được (Observed), Xu hướng (Trend), Mùa vụ (Seasonal) và Phần dư (Residual), giúp hiểu rõ các yếu tố biến động của doanh số.")
+            else:
+                st.warning(f"Không đủ dữ liệu để phân rã chuỗi thời gian cho sản phẩm '{selected_product_for_decomp}'.")
+
 
 elif analysis_type == "Dự báo Doanh số":
-    st.header("Dự báo Doanh số")
+    st.header("🔮 Dự báo Doanh số")
+    st.markdown("Sử dụng các mô hình học máy để dự đoán số lượng sản phẩm bán ra trong tương lai.")
+
     product_names = df_final['Product_Name'].unique().tolist()
     selected_product = st.selectbox("Chọn sản phẩm để dự báo:", product_names)
 
@@ -162,30 +278,38 @@ elif analysis_type == "Dự báo Doanh số":
     )
 
     if st.button("Chạy dự báo"):
-        st.write(f"Đang chạy dự báo cho sản phẩm: **{selected_product}** bằng mô hình **{model_option}**...")
+        st.info(f"Đang chạy dự báo cho sản phẩm: **{selected_product}** bằng mô hình **{model_option}**...")
         fig = None
         forecast_df = pd.DataFrame()
 
-        if model_option == "Linear Regression":
-            fig, forecast_df = run_linear_regression_forecast(df_final, selected_product)
-        elif model_option == "Prophet":
-            fig, forecast_df = run_prophet_forecast(df_final, selected_product)
-        elif model_option == "LSTM":
-            # LSTM có thể mất nhiều thời gian hơn và yêu cầu tensorflow
-            st.warning("Mô hình LSTM có thể mất nhiều thời gian để huấn luyện. Vui lòng chờ...")
-            fig, forecast_df = run_lstm_forecast(df_final, selected_product)
-        elif model_option == "LightGBM":
-            fig, forecast_df = run_lightgbm_forecast(df_final, selected_product)
+        with st.spinner(f'Đang huấn luyện và dự báo với {model_option} cho {selected_product}, có thể mất vài phút...'):
+            if model_option == "Linear Regression":
+                fig, forecast_df = run_linear_regression_forecast(df_final, selected_product)
+            elif model_option == "Prophet":
+                fig, forecast_df = run_prophet_forecast(df_final, selected_product)
+            elif model_option == "LSTM":
+                fig, forecast_df = run_lstm_forecast(df_final, selected_product)
+            elif model_option == "LightGBM":
+                fig, forecast_df = run_lightgbm_forecast(df_final, selected_product)
 
         if fig:
+            st.success("Dự báo hoàn tất!")
             st.pyplot(fig)
-            st.subheader("Kết quả dự báo:")
+            st.subheader("Kết quả dự báo (2025):")
             st.dataframe(forecast_df)
+            st.download_button(
+                label="Tải kết quả dự báo",
+                data=forecast_df.to_csv(index=True).encode('utf-8'),
+                file_name=f"{selected_product}_{model_option}_forecast.csv",
+                mime="text/csv",
+            )
         else:
             st.error("Không thể tạo dự báo cho sản phẩm này. Vui lòng kiểm tra dữ liệu hoặc log lỗi.")
 
 elif analysis_type == "Tối ưu hóa":
-    st.header("Tối ưu hóa")
+    st.header("⚙️ Tối ưu hóa")
+    st.markdown("Đề xuất các giải pháp tối ưu cho việc quản lý tồn kho và chuỗi cung ứng.")
+
     optimization_option = st.selectbox(
         "Chọn loại tối ưu hóa:",
         ("Tối ưu tồn kho (Kho tổng -> Cửa hàng)", "Tối ưu chuỗi cung ứng (Cửa hàng -> Cửa hàng)")
@@ -193,18 +317,23 @@ elif analysis_type == "Tối ưu hóa":
 
     if optimization_option == "Tối ưu tồn kho (Kho tổng -> Cửa hàng)":
         st.subheader("Tối ưu tồn kho từ kho tổng")
-        warehouse_limit = st.number_input("Giới hạn cung cấp từ kho tổng (đơn vị):", min_value=1, value=1000)
-        storage_cap = st.number_input("Sức chứa sản phẩm trên mỗi m² cửa hàng:", min_value=0.1, value=0.5)
+        st.markdown("Mô hình này giúp phân bổ tối ưu số lượng sản phẩm từ kho tổng đến các cửa hàng dựa trên nhu cầu và sức chứa.")
+
+        col_opt_inv1, col_opt_inv2 = st.columns(2)
+        with col_opt_inv1:
+            warehouse_limit = st.number_input("Giới hạn cung cấp từ kho tổng (đơn vị):", min_value=1, value=1000, step=100)
+        with col_opt_inv2:
+            storage_cap = st.number_input("Sức chứa sản phẩm trên mỗi m² cửa hàng:", min_value=0.1, value=0.5, step=0.1)
 
         if st.button("Chạy tối ưu tồn kho"):
-            st.write("Đang chạy tối ưu tồn kho...")
-            # Pass df_final and df_store from the original loaded data
-            df_store_info = pd.read_csv('data/store_info_data_2023_2024_updated.csv')
-            results_df = run_inventory_optimization(df_final, df_store_info,
-                                                    warehouse_supply_limit=warehouse_limit,
-                                                    storage_capacity_per_sqm=storage_cap)
+            with st.spinner("Đang chạy tối ưu tồn kho, vui lòng chờ..."):
+                # TRUYỀN df_final và df_store_info_for_opt ĐÃ ĐƯỢC TẢI Ở ĐẦU APP
+                results_df = run_inventory_optimization(df_final, df_store_info_for_opt,
+                                                        warehouse_supply_limit=warehouse_limit,
+                                                        storage_capacity_per_sqm=storage_cap)
             if not results_df.empty:
-                st.subheader("Kết quả tối ưu tồn kho:")
+                st.success("Tối ưu tồn kho hoàn tất!")
+                st.subheader("Kết quả tối ưu tồn kho (Đơn vị cần điều chỉnh từ kho tổng):")
                 st.dataframe(results_df[results_df['Adjustment_Units_From_Warehouse'] > 0].sort_values(by='Adjustment_Units_From_Warehouse', ascending=False))
                 st.download_button(
                     label="Tải kết quả tối ưu tồn kho",
@@ -213,19 +342,25 @@ elif analysis_type == "Tối ưu hóa":
                     mime="text/csv",
                 )
             else:
-                st.warning("Không có kết quả tối ưu tồn kho hoặc dữ liệu không đủ.")
+                st.warning("Không có đề xuất điều chỉnh tồn kho nào được đưa ra. Có thể không có thiếu hụt hoặc các ràng buộc quá chặt.")
 
     elif optimization_option == "Tối ưu chuỗi cung ứng (Cửa hàng -> Cửa hàng)":
         st.subheader("Tối ưu chuỗi cung ứng (Chuyển kho giữa các cửa hàng)")
-        storage_cap_sc = st.number_input("Sức chứa sản phẩm trên mỗi m² cửa hàng:", min_value=0.1, value=0.5, key="sc_cap")
-        unmet_penalty = st.number_input("Chi phí phạt cho nhu cầu không được đáp ứng:", min_value=1, value=1000, key="sc_penalty")
+        st.markdown("Mô hình này đề xuất các đợt chuyển kho giữa các cửa hàng để cân bằng tồn kho, giảm thiểu chi phí vận chuyển.")
+
+        col_opt_sc1, col_opt_sc2 = st.columns(2)
+        with col_opt_sc1:
+            storage_cap_sc = st.number_input("Sức chứa sản phẩm trên mỗi m² cửa hàng:", min_value=0.1, value=0.5, step=0.1, key="sc_cap")
+        with col_opt_sc2:
+            unmet_penalty = st.number_input("Chi phí phạt cho nhu cầu không được đáp ứng:", min_value=1, value=1000, step=100, key="sc_penalty")
 
         if st.button("Chạy tối ưu chuỗi cung ứng"):
-            st.write("Đang chạy tối ưu chuỗi cung ứng...")
-            df_store_info = pd.read_csv('data/store_info_data_2023_2024_updated.csv')
-            transfer_df, unmet_df, fig_sc = run_supply_chain_optimization(df_final, df_store_info,
-                                                                          storage_capacity_per_sqm=storage_cap_sc,
-                                                                          unmet_demand_penalty=unmet_penalty)
+            with st.spinner("Đang chạy tối ưu chuỗi cung ứng, vui lòng chờ..."):
+                # TRUYỀN df_final và df_store_info_for_opt ĐÃ ĐƯỢC TẢI Ở ĐẦU APP
+                transfer_df, unmet_df, fig_sc = run_supply_chain_optimization(df_final, df_store_info_for_opt,
+                                                                              storage_capacity_per_sqm=storage_cap_sc,
+                                                                              unmet_demand_penalty=unmet_penalty)
+            st.success("Tối ưu chuỗi cung ứng hoàn tất!")
             if transfer_df is not None and not transfer_df.empty:
                 st.subheader("Đề xuất chuyển kho giữa các cửa hàng:")
                 st.dataframe(transfer_df)
@@ -249,12 +384,17 @@ elif analysis_type == "Tối ưu hóa":
                     file_name="supply_chain_unmet_demand.csv",
                     mime="text/csv",
                 )
+            else:
+                st.info("Tất cả nhu cầu ban đầu đã được đáp ứng thông qua chuyển kho.")
 
 elif analysis_type == "Concept Drift":
-    st.header("Kiểm tra Concept Drift")
-    st.write("Kiểm tra sự thay đổi trong phân phối dữ liệu 'Quantity_Sold' theo thời gian.")
+    st.header("⚠️ Kiểm tra Concept Drift")
+    st.markdown("Kiểm tra sự thay đổi trong phân phối dữ liệu 'Quantity_Sold' theo thời gian, một dấu hiệu cho thấy mô hình có thể cần được huấn luyện lại.")
+
     drift_split_date = st.text_input("Nhập ngày phân chia dữ liệu (YYYY-MM-DD):", value="2024-11-01")
 
     if st.button("Chạy kiểm tra Concept Drift"):
-        # The run_concept_drift_check function directly uses st, so no need to return fig
-        run_concept_drift_check(df_path='data/final_dataset.csv', split_date=drift_split_date)
+        with st.spinner("Đang chạy kiểm tra concept drift..."):
+            run_concept_drift_check(df_path='data/final_dataset.csv', split_date=drift_split_date)
+        st.success("Kiểm tra Concept Drift hoàn tất!")
+
